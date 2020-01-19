@@ -40,7 +40,7 @@ GCC的三种IR: AST(Language-specific), GIMPLE, RTL(target-specific)
 AST: 往往是语言相关的,一般包含了部分语言相关的AST节点  
 GENERIC: 规范化的AST.一般来说,如果一种前端语言的AST均能用gcc/tree.h中的节点表示,那么该AST即为规范的AST(GENERIC)  
 
-GCC中的AST数据结构表示: union tree_node  
+### GCC中的AST数据结构表示: union tree_node  
 - 定义形式为: #define DEFTREECODE(SYM, NAME, TYPE, LEN)  
 e.g. DEFTREECODE(ERROR_MARK, "error_mark", tcc_exceptional, 0)  
 表示了一种树节点, 其TREE_CODE为ERROR_MARK,名称为"error_makr", TREE_CODECLASS为tcc_exceptional, 操作数的个数为0  
@@ -121,3 +121,19 @@ struct decl_non_common{
     */
 }
 ```
+GCC提供了一些dump选项,可以输出GCC处理源代码过程中的AST/GIMPLE IR信息,e.g. -fdump-tree-original, -fdump-tree-all等  
+
+### AST生成过程简介(以C语言为例):
+- 词法分析: 字符流->token流, token结构体一般包括:  
+    - 符号类型: CPP_EQ, CPP_NOT, CPPEOF.....
+    - 标识符类型: If this token is a CPP_NAME, this value indicates whether also declared as some kind of type. Otherwise, it is C_ID_NONE.
+    - 关键字标识: If this token is a keyword, this value indicates which keyword. Otherwise, this value is RID_MAX.
+    - PRAGMA类型: If this token is a CPP_PRAGMA, this indicates the pragma that was seen.  Otherwise it is PRAGMA_NONE.
+    - value: 对于一些词法符号来讲,不仅需要关注类型,还要关注值.e.g. 字符串常量符号, 其词法符号类型为CPP_STRING, 字符串的值由value指向的树给出
+    - location: 位置信息  
+早期GCC使用Lex/Flex工具进行词法分析,现在则为handcode(gcc/c-lex.c)
+- 语法分析: 对token流进行语法推导,生成AST
+早期GCC使用Yacc/Bison进行C语言的语法分析,现在为handcode(gcc/c-parser.c)  
+GCC对C语言进行语法分析采用的是LL(2)递归下降算法,且C语言的词法分析嵌入在语法分析过程中,  
+函数c_parse_file()是C语法分析的入口函数,该函数首先对当前的词法符号进行判断,根据当前符号类型来决定是预处理还是进行语法推导  
+- 语义分析: TODO
