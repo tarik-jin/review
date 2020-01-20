@@ -136,4 +136,85 @@ GCC提供了一些dump选项,可以输出GCC处理源代码过程中的AST/GIMPL
 早期GCC使用Yacc/Bison进行C语言的语法分析,现在为handcode(gcc/c-parser.c)  
 GCC对C语言进行语法分析采用的是LL(2)递归下降算法,且C语言的词法分析嵌入在语法分析过程中,  
 函数c_parse_file()是C语法分析的入口函数,该函数首先对当前的词法符号进行判断,根据当前符号类型来决定是预处理还是进行语法推导  
+- AST GENERIC(optional): 不是所有语言的前端都会转换成GENERIC AST
 - 语义分析: TODO
+## AST/GENERIC->GIMPLE
+AST是语言相关的, GENERIC是语言无关规范化的AST(所有AST节点都可以用gcc/tree.h中的树节点表示)  
+但事实上,GCC很多语言的前端处理并不包含AST的GENERIC转换,而是直接将AST(language-specific)转换成GIMPLE(language-independent)  
+
+AST/GENERIC和GIMPLE的区别:  
+- AST/GENERIC语言相关, GIMPLE语言无关
+- AST/GENERIC为树形结构, GIMPLE线性三地址码形式的中间表示序列,更方便后续的编译优化(GIMPLE语句中的操作数依然会大量使用树节点)
+- AST/GENERIC的属性节点类型非常多, GIMPLE语句类型较少  
+
+AST和GIMPLE形式上的区别:  
+- 在GIMPLE中通过引入临时变量保存中间结果,将AST表达式拆分成不超过三个operand的tuples.
+- AST中的控制结构(if-else, for, while)在GIMPLE中被转换为条件跳转语句
+- AST中的Lexical Scopes在低级GIMPLE中被取消
+- AST中的Exceptional Region被转换成一个单独的Exception Region Tree.
+
+AST->GIMPLE过程:  
+AST->High-Level GIMPLE->Low-Level GIMPLE, High-Level GIMPLE到Low-Level GIMPLE的转换pass为*pass_lower_cf*  
+High-Level GIMPLE和Low-Level GIMPLE的区别主要是抽象层次的高低(HL中含有一些表示作用域的语句,嵌套表达式...)
+
+gcc/gimple.def文件声明了各种GIMPLE语句  
+e.g. DEFGSCODE(GIMPLE_COND, "gimple_cond", struct gimple_statement_with_ops)  
+声明主要包括:
+- GIMPLE_CODE, 第一个参数,描述GIMPLE语句的语义,例子的GIMPLE语句为条件语句
+- 名称, 第二个参数,打印名称时使用
+- GIMPLE语句操作数的偏移量, 第三个参数, 以DEFGSCODE宏定义中使用的结构体大小来计算,该GIMPLE语句存储时, 使用的结构体为struct gimple_statement_with_ops
+通过该结构体的相关信息,可以计算GIMPLE_COND语句操作数的偏移量,从而访问其操作数  
+
+GIMPLE的表示与存储类似于AST节点,都是类似于面向对象的那种由基类分别派生出子类的结构  
+AST/GENERIC经过转换将形成一系列的GIMPLE语句,GCC将这些GIMPLE语句组织成一种线性的序列,通过线性序列的起始节点就可以逐一遍历  
+为了方便对所有GIMPLE语句序列进行操作,GCC还定义了一个GIMPLE序列的描述节点,该序列节点包括三个字段  
+分别指向每个GIMPLE序列的第一个语句节点、最后一个语句节点、以及下一个空闲的序列节点
+### GIMPLE的生成(gcc/c-gimplify.c)
+一般而言GIMPLE生成以函数为单位进行.GCC前端完成一个函数的词法/语法分析->函数AST, 调用函数  
+```C
+c_genericize(tree fndecl)  
+```
+对函数fndecl的AST进行规范化处理,在函数c_genericize(tree fndecl)中,会进一步调用  
+```C
+gimplify_function_tree(fndecl)
+```
+将函数AST->GIMPLE序列,参数***fndecl***就是将要转换的函数声明节点,框架如下:
+```C
+void c_genericize(tree fndecl){
+    /*
+    ...
+    */
+    gimplify_function_tree(fndecl); //以函数为单位,完成AST/GENERIC到GIMPLE的转换
+    /*
+    ...
+    */
+}
+```
+## GIMPLE PASS
+pass数据结构一般包括:
+- pass的类型: GCC中pass分为四大类
+    - GIMPLE_PASS: 以GIMPLE中间标识为处理对象
+    - RTL_PASS: 处理RTL中间表示
+    - SIMPLE_IPA_PASS: 
+    - IPA_PASS: 和SIMPLE_IPA_PASS均处理GIMPLE中间标识,但是功能主要集中在IPA(Inter-Procedural Analysis)的处理上  
+    即函数间的变量传递和调用关系等
+- 名称
+- 执行条件: bool gate (function *fun);
+- 执行函数
+- 静态编号
+- sub指针: 子链
+- next指针
+- misc
+
+几个重要的基于GIMPLE的pass:
+- pass_lower_cf: 主要功能为将Hign-Level GIMPLE转换成Low-Level GIMPLE
+- pass_build_cfg: 对函数的GIMPLE序列进行分析,完成基本快的划分,根据GIMPLE语义构造基本块之间的跳转关系
+- pass_build_cgraph_edges: 构造函数调用图,调用关系可以使用有向图的形式进行描述
+- pass_build_ssa: 将GIMPLE转换成SSA形式
+- pass_all_optimizations: 完成GCC预定义的all_passes链中的基于GIMPLE和RTL的各种优化处理  
+GCC预定义的pass链如下(partly):
+    - all_passes: 完成基于GIMPLE和RTL的各种优化及其相关处理
+    - all_ipa_passes: IPA优化
+    - all_lowering_passes: 完成函数GIMPLE序列的低级化处理  
+    这三个分别包含了不同数量和内容的pass,是否执行一般由该pass中的gate()函数决定,同时也依赖于gcc编译时所使用的优化选项
+- pass_expand: 将GIMPLE转换为RTL
