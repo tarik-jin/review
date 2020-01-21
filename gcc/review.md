@@ -97,7 +97,7 @@ struct tree_decl_common{
 };
 ```
 除了上述两个基类声明节点,还有三个基类节点也是以层级结构构成其他声明结点的基类  
-[![1CrMgf.md.jpg](https://s2.ax1x.com/2020/01/19/1CrMgf.md.jpg)](https://imgchr.com/i/1CrMgf)
+[![1FsGDK.md.jpg](https://s2.ax1x.com/2020/01/21/1FsGDK.md.jpg)](https://imgchr.com/i/1FsGDK)
 
 ```C
 struct tree_decl_with_rtl{
@@ -166,6 +166,8 @@ e.g. DEFGSCODE(GIMPLE_COND, "gimple_cond", struct gimple_statement_with_ops)
 通过该结构体的相关信息,可以计算GIMPLE_COND语句操作数的偏移量,从而访问其操作数  
 
 GIMPLE的表示与存储类似于AST节点,都是类似于面向对象的那种由基类分别派生出子类的结构  
+GIMPLE分层主要是因为有些GIMPLE语句中带有操作数, GIMPLE结构体只有第一个操作数的指针(tree op[1]),后续操作数的结点指针将被连续存放在tree op[1]之后的地址中
+
 AST/GENERIC经过转换将形成一系列的GIMPLE语句,GCC将这些GIMPLE语句组织成一种线性的序列,通过线性序列的起始节点就可以逐一遍历  
 为了方便对所有GIMPLE语句序列进行操作,GCC还定义了一个GIMPLE序列的描述节点,该序列节点包括三个字段  
 分别指向每个GIMPLE序列的第一个语句节点、最后一个语句节点、以及下一个空闲的序列节点
@@ -218,3 +220,100 @@ GCC预定义的pass链如下(partly):
     - all_lowering_passes: 完成函数GIMPLE序列的低级化处理  
     这三个分别包含了不同数量和内容的pass,是否执行一般由该pass中的gate()函数决定,同时也依赖于gcc编译时所使用的优化选项
 - pass_expand: 将GIMPLE转换为RTL
+## RTL(Register Transfer Language)
+RTL采用了类似LISP的前缀表达式形式,描述了每一条指定的语义动作,根据作用分为两大类:
+- Internal Form: 由GIMPLE转换而来,也是一种IR,可以成为IR-RTL(Intermediate Representation RTL)
+- Textual Form: 用于Machine Description文件中, 进行机器描述时所采用的RTL形式, 称为MD-RTL(Machine Description RTL)
+
+GIMPLE->IR-RTL:  
+按照GCC设计时所定义的规则,将每个GIMPLE语句转换成具有某个SPN(Standard Pattern Name)对应的RTL,这个转换规则是机器无关的.  
+从MD-RTL来看,某个SPN所定义的指令模板则是与机器相关的,对应于不同的机器,其实现内容也是各不相同的  
+从IR-RTL来看,这些SPN所对应的操作语义则是***与机器无关的***.   
+通过SPN来将GIMPLE_CODE和MD-RTL中具有SPN的指令模板进行匹配,实现机器无关的GIMPLE表示到机器相关的RTL之间的转换.  
+因此,在使用MD-RTL描述目标机器特性时,必须定义这些SPN所对应的指令模板  
+
+GIMPLE->IR-RTL->Asm
+[![1FNw38.md.png](https://s2.ax1x.com/2020/01/21/1FNw38.md.png)](https://imgchr.com/i/1FNw38)  
+MD-RTL主要用来描述机器的指令模板,其中具有SPN的指令模板用来指导IR-RTL的构造,从而实现机器无关的GIMPLE表示到机器相关的IR-RTL之间的转换.  
+IR-RTL->Asm: 进一步根据MD-RTL中所定义的所有指令模板, 完成IR-RTL到指令模板的匹配,根据匹配指令模板中的汇编代码输出格式生成汇编代码  
+***SPN(核心)***解耦了机器相关的RTL/Asm与机器无关的的GIMPLE.  
+
+RTL中的对象类型
+IR-RTL共五种Object Type: Expression, Integer, Wide Integer, String, Vector  
+- Integer: 类型为int的简单类型
+- Wide Integer: 数据类型为HOST_WIDE_INT
+- String: 类似于C
+- Vector: 包含任意数量的RTX表达式
+- Expression(重点): 也称为RTX(RTL eX pression),是RTL最重要的一类对象.
+ 
+### RTX
+宏定义声明(gcc/rtl.def):  
+DEF_RTL_EXPR(RTL_CODE, NAME, PRINT_FORMAT, RTX_CLASS)  
+包括四个部分:  
+- RTL_CODE: RTX的语义标识, 与TREE_CODE, GIMPLE_CODE类似.***注意:RTX_CODE所表达的语义是机器无关的.***
+- NAME: 输出该RTX时的字符串表示
+- PRINT_FORMAT: 描述了该RTX操作数的输出格式, 同时也描述了这些操作数的类型及操作数的个数
+[![1FyDJJ.md.png](https://s2.ax1x.com/2020/01/21/1FyDJJ.md.png)](https://imgchr.com/i/1FyDJJ)  
+- RTX_CLASS: 描述了RTX的分类类型  
+(e.g. RTX_CONST_OBJ(常量), RTX_OBJ(寄存器和内存), RTX_COMPARE(比较运算), 算术运算...)  
+
+有一类RTX比较特殊,与表示"值"的RTX不同,这些特殊的RTX表示"动作", 这些RTX所描述的"动作"称之为RTX的Side Effect.  
+一般来说, 机器指令insn(描述程序代码信息的IR-RTL)的body部分通常是具有side effect的RTX, 用来表示一些"动作", 其余的RTX通常只是作为这些具有side effect的RTX的操作数出现.  
+常见的side effect RTX:  
+- (set lval x): 将值存储到lval对应的RTX中
+- (return)
+- (call function nargs): 函数调用, function时一个mem表达式,值为被调函数的地址
+- (clobber x): x的值可能会被修改
+- (use): 需要使用x的值
+
+RTX定义: e.g. DEF_RTL_EXPR(GE, "ge", "ee", RTX_COMPARE)  
+该定义表明了一个表示"大于或等于"语义的RTX, 输出字符串名称为"ge", 类型为RTX_COMPARE, "ee"为操作数的输出格式(两个操作数)
+对于RTX来说,有些RTX只能出现在IR-RTL中,有些只能用于MD-RTL,有些both
+
+### RTX MACHINE MODES(gcc/machmode.def)  
+机器模式表示在机器层次上数据的大小及其格式,***每个RTX均有其机器模式的描述***  
+GCC也支持定义与特定目标机器相关的机器模式(config/${target}/${target}-modes.def)
+gcc internals原文:  
+A machine mode describes a size of data object and the representation used for it. Each RTL expression has room for a machine mode and so do certain kinds of tree expressions (declarations and types, to be precise). In debugging dumps and machine descriptions, the machine mode of an RTL expression is written after the expression code with a colon to separate them. The letters ‘mode’ which appear at the end of each machine mode name are omitted. For example, (reg:SI 38) is a reg expression with machine mode SImode. If the mode is VOIDmode, it is not written at all.
+
+### RTX的存储
+RTX使用结构体rtx_def进行存储(gcc/rtl.h),主要包括两部分:
+```C
+struct rtx_def{
+    //Header
+    ENUM_BITFIELD(rtx_code) code: 16;
+    ENUM_BITFIELD(machine_mode) mode : 8;
+    /*
+    misc flag
+    */
+
+    //RTX的第0操作数
+    union u{
+        /*
+        各种不同类型的操作数
+        */
+    }
+}
+```
+- RTX Header: 所有RTX首部长度相同,描述了RTX_CODE, 机器模式, RTX flag....
+- RTX的第0操作数. RTX的操作数使用union u进行存储,表示各种不同类型的操作数  
+由于各种RTX包含的操作数数目和类型都不相同,所以每种RTX的实际存储大小也不尽相同
+### IR-RTL
+RTL可以用来进行机器描述(MD-RTL),也可以描述由GIMPLE转换而来的程序代码信息,GCC中描述程序代码信息的RTL也被称为insn  
+用来表述程序中的算术运算、程序跳转、标号等,也可以用来表示各种说明信息  
+[![1Fskj0.md.png](https://s2.ax1x.com/2020/01/21/1Fskj0.md.png)](https://imgchr.com/i/1Fskj0)  
+所有的insn被一个双向链表所连接(这6种insn的前三个操作数都一样,第二和第三个操作数uu用来连接前后insn)  
+
+以RTX_CODE为INSN(非跳转、非函数调用的指令)的insn举例
+e.g. DEF_RTL_EXPR(INSN, "insn", "iuuBieie", RTX_INSN)  
+- RTX_CODE: INSN
+- RTX_类型: RTX_INSN
+- 输出格式: iuuBieie(第0,1,2操作数所有insn都一样,分别是insn的UID值,insn的前驱节点,后继节点)
+    - 第3操作数"B": 基本快信息指针(basic bolck)
+    - 第4操作数"i": 描述了该INSN对应的源代码的行数
+    - 第5操作数"e": INSN的主体(称为insn的pattern或者body部分), 描述了该INSN的指令模板
+    - 第6操作数"i": ***INSN_CODE, 即该INSN操作所对应的指令模板索引值***
+    - 第7操作数"e": 未使用
+
+INSN实例  
+[![1F6hn0.md.png](https://s2.ax1x.com/2020/01/21/1F6hn0.md.png)](https://imgchr.com/i/1F6hn0)
