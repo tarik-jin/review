@@ -315,5 +315,115 @@ e.g. DEF_RTL_EXPR(INSN, "insn", "iuuBieie", RTX_INSN)
     - 第6操作数"i": ***INSN_CODE, 即该INSN操作所对应的指令模板索引值***
     - 第7操作数"e": 未使用
 
-INSN实例  
-[![1F6hn0.md.png](https://s2.ax1x.com/2020/01/21/1F6hn0.md.png)](https://imgchr.com/i/1F6hn0)
+INSN实例(JUMP_INSN, CALL_INSN, BARRER, CODE_LABEL, NOTE都类似,偷个懒🤭)  
+[![1F6hn0.md.png](https://s2.ax1x.com/2020/01/21/1F6hn0.md.png)](https://imgchr.com/i/1F6hn0)  
+
+## Machine Descriptions(MD-RTL)
+机器描述主要包括两部分:
+- Machine Descriptions文件(${target}.md),主要描述目标机器所支持的每条指令的Instruction Pattern
+- 机器描述的头文件及c文件(${target}.[ch]),主要描述了与机器相关的变量声明与函数实现  
+同时配合md文件,实现其指令模板里变量的定义及其函数代码的实现等  
+
+整个GCC编译器的编译过程主要包括:  
+[![1FXuIe.md.jpg](https://s2.ax1x.com/2020/01/21/1FXuIe.md.jpg)](https://imgchr.com/i/1FXuIe)  
+
+机器描述就是使用规范的RTL语言(MD-RTL)对目标机器的特性进行描述的文件,尤其是其中指令模板的定义,指导了GIMPLE IR向IR-RTL转换的具体形式  
+主要包含:  
+Insn Pattern定义、Constang定义、Attribute定义、User-Defined Predicate、User-Defined Constraint  
+Iterator定义、Pipeline声明、Peephole Optimization定义  
+[![1FvFnx.md.jpg](https://s2.ax1x.com/2020/01/21/1FvFnx.md.jpg)](https://imgchr.com/i/1FvFnx)  
+### 指令模板(define_insn)
+MD文件包含了目标机器所支持的每一条指令的指令模板,形式如下:  
+```Lisp
+(define_insn 指令模板名称
+    RTL模板
+    条件
+    输出模板
+    属性
+) 
+```
+指令模板定义中的五部分:  
+- 指令模板名称: 由字符串给出, 唯一的标识了该指令模板
+- RTL模板: 提供了一个不完整的RTX向量, 用来描述指令的RTX表示形式  
+如果RTX向量只有一个元素,表示普通的指令模板,如果由多个元素,表示并行(Parallel)的指令模板
+- Condition: C表达式,判断某个insn是否与该指令模板匹配的最后条件
+- Output Template: 描述该指令模板转换成目标汇编代码时的输出格式
+- Attribute: 设置指令的一些属性值,可忽略  
+
+mips的一条指令模板的具体实例(gcc/config/mips/mips.md)如下:  
+[![1FxfJg.md.jpg](https://s2.ax1x.com/2020/01/21/1FxfJg.md.jpg)](https://imgchr.com/i/1FxfJg)  
+#### 1.模板名称
+SPN(Standard Pattern Name)是GCC中预定义的一些指令模板的名称  
+GIMPLE->IR-RTL的转换可以看做两个阶段:
+1. GIMPLE->SPN: 每个SPN只是某个IR-RTL模板的抽象代表,某个GIMPLE语句到SPN的mapping是GCC事先预定好的(Hard-coded),***与机器无关***
+2. SPN->IR-RTL: 根据SPN从MD文件中提取与SPN相匹配的指令模板, 根据该模板构造出对应的IR-RTL.***与机器紧密相关***
+注: 只有命名的define_insn/define_expand指令模板才会用来构造insn
+#### 2.RTL模板
+[![1kSCcj.md.jpg](https://s2.ax1x.com/2020/01/21/1kSCcj.md.jpg)](https://imgchr.com/i/1kSCcj)  
+RTL模板的功能主要有两种:  
+- Matching: 用来描述包含该RTL模板的指令模板是否可以和特定的IR-RTL完成匹配,以及如何获得该IR-RTL的操作数.对于匹配操作,IR-RTL的形式及其操作数应该满足该RTL模板所要求的匹配条件.匹配发生在insn已经完成,需要进行insn后续操作(利用insn生成目标汇编)
+- Construction: 对于命名的指令模板, RTL模板描述了如何利用给定的操作数实现该指令模板对应的insn的构造.对于构造来说,即从GIMPLE->insn时,需要从GIMPLE语句中提取相应的操作数,并替换RTL模板中的操作数占位符.构造发生在insn的生成过程(GIMPLE生成RTL时)中.
+    ##### Predicate(define_predicate)
+    断言是RTL模板中操作数是否满足某种条件的判定过程,通常由一个描述断言函数名称的字符串来表示  
+    GCC中的断言可分为Machine-Independent Predicates和Machine-Dependent Predicates
+    ##### Constraint(define_constraint)
+    约束对断言所允许的操作数进行更详细的描述
+
+#### 3.Conditions
+指令模板中的条件是一个C表达式, 判断该指令模板是否匹配的最后条件
+#### 4.输出模板
+表示该指令模板匹配后如何输出目标汇编代码
+#### 5.属性(define_attr)
+对指令属性进行设置, 通常在指令模板及流水线优化中有较多的使用
+
+### 定义RTL序列(define_expand)
+***在某些特定的机器上***,一个具有SPN的指令模板所生成的指令不能被一条insn所表示,  
+但是可以用一系列的insn表示,此时就可以利用define_expand来描述如何生成一系列的insn
+与define_insn的不同点: 
+- define_ expand只在RTL构造时使用
+- define_expand定义中的准备语句也是define_insn没有的:  
+包含0个或者多个C语句的字符串,这些C语句在从RTL模板生成RTL代码之前执行.通常这些语句会给RTL生成准备一些临时的reg,作为RTL模板中的内部操作数使用  
+当然这些语句也可以通过调用一些例程(emit_insn)等直接生成insn, 这些insn将插入在由RTL模板生成的insn之前
+### 指令拆分(define_split)
+***在某些特定的目标机器中***,可以对一些复杂的指令模板进行分解,即将一个复杂的指令模板分解成多个简单的指令模板,从而生成多个简单的insn
+### Iterator
+在机器描述文件中,通常对针对不同的机器模式或者RTX_CODE书写大致类似的指令模板.为了避免书写复杂  
+通常可以使用Iterator进行指令模板的简化, 分为:  
+- mode枚举器(define_mode_iterator): 机器模式枚举器
+- code枚举器(define_code_iterator): 主要用于对RTX_CODE的扩展
+### Peephool Optimization
+窥孔优化是一种局部优化方式,可以认为是一个滑动窗口,只分析窗口内的指令,看能否合并成一条指令
+在机器描述文件中,有两种窥孔优化方式:
+- define_peephole: RTL to Text Peephole Optimizers
+- define_peephole2: RTL to RTL Peephole Optimizers
+
+## 机器描述文件${target}.[ch]
+{target}.md使用MD-RTL对目标机器的指令生成进行了详细描述,但是还有一些如:  
+寄存器信息、storage layout以及一些与硬件相关的函数实现等无法使用RTL进行描述,因此需要${target}.[ch]  
+[![1kVHmD.md.jpg](https://s2.ax1x.com/2020/01/21/1kVHmD.md.jpg)](https://imgchr.com/i/1kVHmD)  
+- targetm(target.h):  
+```C
+struct gcc_target targetm;
+//描述目标机器的结构体,异常复杂,主要包含汇编代码输出、指令调度、向量化、函数参数传递、函数返回以及其他大量与目标机器相关的信息
+```
+- 编译驱动及选项:  
+GCC本质上是一个编译驱动程序,它通过调用一系列其他程序来完成compile、汇编、链接等工作  
+GCC需要对命令行参数进行解析,从而根据命令行参数判断需要调用哪些程序,以及向这些程序传递什么样的命令行参数  
+这些工作由GCC内部定义的SPEC字符串完成
+- SPEC语言及SPEC文件:  
+一种用来描述GCC传递给各个处理程序的命令行参数的DSL
+- storage layout:  
+主要定义目标机器中数据存储的格式、大小、对齐方式...
+- 寄存器使用:主要定义目标机器中的寄存器用法,包括  
+目标机器物理寄存器的数量(本质上只是微架构暴露出来的接口,并非物理寄存器,真正的物理寄存器会在寄存renaming中使用,对程序员透明)  
+寄存器的初始化、寄存器分配顺序、寄存器在函数调用时是否需要保存、寄存器名称、寄存器类型...
+- 堆栈及函数调用规范描述
+通常要对堆栈的增长方向、堆栈的布局、以及一些描述堆栈地址的寄存器进行设置
+- 寻址方式
+- 汇编代码分区
+- 定义输出的汇编语言
+- 机器描述信息的提取: 
+GCC源码中包含了一些名称为gcc/gen*的文件,这些文件的主要功能就是读取、机器描述文件,并生成与目标机器相关的源代码.  
+这些以gen开头的文件被称为Machine-Dependent Generator Code(MDGC),  
+其编译生成的可执行程序就用来从目标机器的描述文件中提取信息,并生成与目标系统相关的源代码.  
+生成的目标机器相关源代码将与GCC的其他源代码一起,编译生成目标机器上的compiler
