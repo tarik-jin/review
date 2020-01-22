@@ -455,7 +455,31 @@ RTL expansion has traditionally been done on trees, so the transition to doing i
     从而完成TREE_CODE到指令模板的映射.
     - 根据模板中的操作数信息,从树形结构中提取操作数,并利用指令模板中提供的构造函数来构造insn的主体,从而生成insn.  
     提取指令模板中RTX构造函数,利用构造函数和相应的树结构中提取的操作数来完成insn的构造
+## RTL处理及优化
+在GCC预定义的all_passes链中,执行了pass_expand过程之后,GCC的中间标识就已经转换成RTL形式,此后所有的pass都是基于RTL的处理过程(RTL_PASS)  
+所有的RTL处理***都包含在***pass_rest_of_compilation的处理过程及其子过程中,主要包括了对pass_expand所生成的insn序列进行进一步的处理,  
+包括循环优化、寄存器分配、窥孔优化...  
+RTL重要pass简介:  
+### pass_instantiate_virtual_regs: 
+特殊寄存器的实例化,将虚拟寄存器实例化成目标机器上特定的物理寄存器(硬件寄存器)  
+- 注:特殊寄存器实例化之后的物理寄存器在给定的目标机器上并不一定都是存在的,  
+因此在后续的寄存器分配过程中,可以使用寄存器消除的方法将这些寄存器替换成真正存在的物理寄存
+### 指令调度(Instruction Scheduling):  
+对当前函数的insn序列进行重新排列,更充分的利用目标机器的硬件资源,提高指令的执行效率.  
+指定调度主要考虑因素包括Data Dependency、Control Dependency、Structural Hazard、指令延迟或者指令cost...  
+通常指令调度与目标机器中的流水线设置紧密相关  
+- Data Dependency: True Dependenc(RAW)、Anti-dependence(WAR)、Output Dependence(WAW)、Input Dependence(RAR)  
+    WAR和WAW没有逻辑上的相关性,只是由于共用了同一个寄存器而存在相关性(ISA暴露的寄存器太少),被称为伪相关(可通过CPU内部的寄存器重命名解决)
+- Control Dependency: 条件跳转等指令的锅(CPU内部可通过Speculative Execution解决,其实就是预测)
+- Structural Hazard: 通常是指由于目标机器的硬件资源限制而导致的相关性冲突  
+- GCC中的指令调度主要包括两个Pass,即
+    - pass_sched: 在寄存器分配之前进行
+    - pass_sched2: 在寄存器分配之后进行  
 
-
-
-
+- GCC的指令调度算法(List Scheduling为默认算法):  
+[![1AN2Ct.md.jpg](https://s2.ax1x.com/2020/01/22/1AN2Ct.md.jpg)](https://imgchr.com/i/1AN2Ct)
+### Register Allocation(太复杂了,偷懒🤭)
+寄存器分配主要有两种算法:
+- 图着色算法(GCC4.4.0使用的这个,不知道最新版本情况)
+- 线性扫描算法(貌似LLVM用的就是这个)
+### 汇编代码生成: pass_final
