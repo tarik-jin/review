@@ -172,7 +172,7 @@ AST/GENERIC经过转换将形成一系列的GIMPLE语句,GCC将这些GIMPLE语�
 为了方便对所有GIMPLE语句序列进行操作,GCC还定义了一个GIMPLE序列的描述节点,该序列节点包括三个字段  
 分别指向每个GIMPLE序列的第一个语句节点、最后一个语句节点、以及下一个空闲的序列节点
 ### GIMPLE的生成(gcc/c-gimplify.c)
-一般而言GIMPLE生成以函数为单位进行.GCC前端完成一个函数的词法/语法分析->函数AST, 调用函数  
+一般而言***GIMPLE生成以函数为单位***进行.GCC前端完成一个函数的词法/语法分析->函数AST, 调用函数  
 ```C
 c_genericize(tree fndecl)  
 ```
@@ -427,3 +427,35 @@ GCC源码中包含了一些名称为gcc/gen*的文件,这些文件的主要功�
 这些以gen开头的文件被称为Machine-Dependent Generator Code(MDGC),  
 其编译生成的可执行程序就用来从目标机器的描述文件中提取信息,并生成与目标系统相关的源代码.  
 生成的目标机器相关源代码将与GCC的其他源代码一起,编译生成目标机器上的compiler
+## GIMPLE->RTL
+准确来讲,是GIMPLE->IR-RTL的过程,即GIMPLE转换成insn序列的过程
+众多基于GIMPLE的pass中,pass_expand完成了GIMPLE向RTL的转换  
+在以函数为单位进行RTL生成时(GIMPLE也是以函数为单位转换的),需要对当前函数的RTL信息进行维护,这个主要由struct rtl_data来描述  
+pass_expand主要处理框架(以函数为单位):  
+- 变量展开: 对当前函数中所有变量进行分析,在虚拟寄存器或者堆栈为其分配空间,生成对应的RTX
+- 参数和返回值的处理: 对函数的参数和返回值进行处理,生成对应的RTX
+- 初始块的处理: 创建初始块,并修正函数的CFG.
+- 基本块的展开: 对函数体中每个基本块所包含的GIMPLE语句序列逐个进行展开(RTL生成的主要部分)
+- 退出块的处理: 创建退出块, 生成函数退出的RTL, 并修正函数的CFG
+- MISC: 重建基本块、异常处理...
+
+GIMPLE语句转换成RTL 
+一般来讲,一条GIMPLE语句生成RTL时,通常先将GIMPLE语句转换成树的存储形式,  
+再根据树中表达式节点的TREE_CODE值,调用相应的函数生成对应的insn表示,详情如下:  
+1. GIMPLE语句转换成树形结构  
+这个阶段GIMPLE_CODE与TREE_CODE的映射关系是与目标机器无关的  
+关于GIMPLE为什么不直接转换成RTL,而是需要中间树结构作为媒介,GCC代码(4.4.0)注释如下:  
+RTL expansion has traditionally been done on trees, so the transition to doing it on GIMPLE tuples is very invasive to the RTL expander. To facilitate the transition, this function takes a GIMPLE tuple STMT and returns the same statement in the form of a tree.
+
+2. 从树形结构生成RTL(两个关键步骤):  
+    - 选择构造insn的指令模板:  
+    因为目标机器上指令模板的内容千差万别,很难直接定义树节点的TREE_CODE和指令模板的对应关系, 因此GCC引入了***SPN(Standard Pattern Name)***.  
+    作为TREE_CODE(表示某种语义操作)和对应指令模板之间的"映射中介",某种TREE_CODE和SPN的对应关系是由GCC系统确定,且和目标机器无关的.  
+    SPN在MD文件中表现为指令模板的名称,通过定义具有SPN的指令模板的索引号,就可以通过SPN作为纽带, 根据TREE_CODE查找出对应的指令模板索引号   
+    从而完成TREE_CODE到指令模板的映射.
+    - 根据模板中的操作数信息,从树形结构中提取操作数,并利用指令模板中提供的构造函数来构造insn的主体,从而生成insn.  
+    提取指令模板中RTX构造函数,利用构造函数和相应的树结构中提取的操作数来完成insn的构造
+
+
+
+
